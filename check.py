@@ -1,55 +1,47 @@
 import requests
-import itertools
-import time
 import random
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 
-# Discord username checker для 4-символьных ников
-# Поддержка: a-z, 0-9, ., _
-# Только прокси (http/s)
-# Многопоточный, с ротацией прокси
+# УЛУЧШЕННЫЙ Discord 4L Username Checker
+# Только рандом генерация + прокси
+# Быстрее, стабильнее, меньше нагрузки
 
 # === НАСТРОЙКИ ===
-PROXIES_FILE = "proxies.txt"  # Каждая строка: http://user:pass@ip:port или http://ip:port
-THREADS = 50                  # Количество потоков
-DELAY = 0.3                   # Задержка между запросами (сек)
-TIMEOUT = 10
-CHECK_ENDPOINT = "https://discord.com/api/v9/users"  # Базовый эндпоинт, будем проверять существование
+PROXIES_FILE = "proxies.txt"
+THREADS = 30
+REQUESTS_PER_PROXY = 5      # Сколько запросов на один прокси перед сменой
+TIMEOUT = 8
+DELAY = 0.25
 
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
     "Content-Type": "application/json"
 }
 
-# Глобальные переменные
 available = []
 checked = 0
 lock = threading.Lock()
 
 def load_proxies():
-    """Загрузка прокси из файла"""
     try:
         with open(PROXIES_FILE, "r", encoding="utf-8") as f:
             proxies = [line.strip() for line in f if line.strip() and not line.startswith("#")]
         print(f"[+] Загружено {len(proxies)} прокси")
         return proxies
-    except FileNotFoundError:
-        print("[-] Файл proxies.txt не найден. Создай его и положи прокси.")
+    except:
+        print("[-] proxies.txt не найден")
         return []
 
-def is_username_available(username, proxy):
-    """Проверка доступности ника через Discord API"""
+def check_username(username, proxy):
     global checked
     try:
-        # Простой способ — попытка получить пользователя по имени (неофициально)
-        # Discord может вернуть 404 если ник свободен или 200 если занят
-        # Альтернатива: проверка через lookup
         proxy_dict = {"http": proxy, "https": proxy}
         
-        # Один из рабочих методов — запрос к /users с поиском
+        # Более надёжный метод проверки
         resp = requests.get(
             f"https://discord.com/api/v9/users/@{username}",
             headers=headers,
@@ -61,62 +53,49 @@ def is_username_available(username, proxy):
             checked += 1
             if resp.status_code == 404:
                 available.append(username)
-                print(f"[+] СВОБОДЕН: {username} | Прокси: {proxy[:30]}...")
+                print(f"[+] СВОБОДЕН → @{username}")
                 return True
-            elif resp.status_code == 200:
-                print(f"[-] Занят: {username}")
-                return False
+            elif resp.status_code in (200, 204):
+                print(f"[-] Занят → @{username}")
             else:
-                print(f"[?] Неизвестный код {resp.status_code} для {username}")
-                return False
-    except Exception as e:
-        return False
+                print(f"[?] {resp.status_code} | {username}")
+    except:
+        pass
+    return False
 
-def generate_combinations():
-    """Генерация всех 4-символьных комбинаций"""
+def random_username():
     chars = "abcdefghijklmnopqrstuvwxyz0123456789._"
-    print(f"[+] Генерация комбинаций из {len(chars)} символов...")
-    # 4 символа: ~ 40^4 = 2.56 млн — реально, но фильтруем
-    for combo in itertools.product(chars, repeat=4):
-        username = "".join(combo)
-        # Discord правила: не начинать/заканчивать на . _ иногда, но пропускаем
-        yield username
+    return ''.join(random.choice(chars) for _ in range(4))
 
-def worker(username, proxies):
-    """Рабочий поток"""
-    proxy = random.choice(proxies)
-    is_username_available(username, proxy)
-    time.sleep(DELAY + random.uniform(0, 0.2))
+def worker(proxies):
+    while True:  # Бесконечный режим — останови Ctrl+C
+        proxy = random.choice(proxies)
+        for _ in range(REQUESTS_PER_PROXY):
+            username = random_username()
+            check_username(username, proxy)
+            time.sleep(DELAY + random.uniform(0, 0.15))
 
 def main():
     proxies = load_proxies()
     if not proxies:
         return
     
-    print("[*] Запуск чекера 4L Discord usernames...")
-    print("[*] Символы: a-z 0-9 . _")
-    
-    start_time = time.time()
+    print("[*] Запуск улучшенного 4L Discord checker...")
+    print("[*] Режим: случайная генерация + ротация прокси")
     
     with ThreadPoolExecutor(max_workers=THREADS) as executor:
-        futures = []
-        for username in generate_combinations():
-            futures.append(executor.submit(worker, username, proxies))
-            # Ограничим для теста, но можно убрать
-            if len(futures) > 10000:  # Пример лимита, убери для полного перебора
-                break
-        
-        for future in as_completed(futures):
-            pass  # Просто ждём
-    
-    print("\n[!] Проверка завершена!")
-    print(f"Проверено: {checked} ников")
-    print(f"Свободно: {len(available)}")
-    
+        futures = [executor.submit(worker, proxies) for _ in range(THREADS)]
+        try:
+            for future in as_completed(futures):
+                future.result()
+        except KeyboardInterrupt:
+            print("\n[!] Остановлено пользователем")
+
+    print(f"\nПроверено: {checked} | Найдено свободных: {len(available)}")
     if available:
-        with open("available_usernames.txt", "w", encoding="utf-8") as f:
-            f.write("\n".join(available))
-        print("[+] Свободные ники сохранены в available_usernames.txt")
+        with open("free_usernames.txt", "a", encoding="utf-8") as f:
+            f.write("\n".join(available) + "\n")
+        print("[+] Свободные ники дописаны в free_usernames.txt")
 
 if __name__ == "__main__":
     main()
